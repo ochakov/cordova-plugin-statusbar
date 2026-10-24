@@ -118,6 +118,16 @@ static const void *kStatusBarStyle = &kStatusBarStyle;
     return [[self statusBarManager] isStatusBarHidden];
 }
 
+// The hidden state last requested via hide()/show(). statusBarManager.isStatusBarHidden may lag behind
+// setNeedsStatusBarAppearanceUpdate, so a show() right after a hide() must not depend on it alone.
+- (BOOL) isStatusBarHiddenRequested {
+    if (_uiviewControllerBasedStatusBarAppearance) {
+        CDVViewController* vc = (CDVViewController*)self.viewController;
+        return [vc.sb_hideStatusBar boolValue];
+    }
+    return [self isStatusBarHidden];
+}
+
 - (CGRect) statusBarFrame {
     return [[self statusBarManager] statusBarFrame];
 }
@@ -372,7 +382,7 @@ static const void *kStatusBarStyle = &kStatusBarStyle;
 {
     _statusBarVisible = NO;
 
-    if (![self isStatusBarHidden])
+    if (![self isStatusBarHidden] || ![self isStatusBarHiddenRequested])
     {
 
         [self hideStatusBar];
@@ -405,7 +415,7 @@ static const void *kStatusBarStyle = &kStatusBarStyle;
 {
     _statusBarVisible = YES;
 
-    if ([self isStatusBarHidden])
+    if ([self isStatusBarHidden] || [self isStatusBarHiddenRequested])
     {
         [self showStatusBar];
         [self resizeWebView];
