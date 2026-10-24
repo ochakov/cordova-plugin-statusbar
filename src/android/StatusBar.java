@@ -66,6 +66,7 @@ public class StatusBar extends CordovaPlugin {
     private AppCompatActivity activity;
     private Window window;
     private String currentStyle = STYLE_LIGHT_CONTENT;
+    private boolean overlaysWebView = true;
 
     /**
      * Sets the context of the Command. This can then be used to do things like
@@ -129,6 +130,11 @@ public class StatusBar extends CordovaPlugin {
                     // CB-11197 We still need to update LayoutParams to force status bar
                     // to be hidden when entering e.g. text fields
                     window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+
+                    if (hasSystemBarPlugin()) {
+                        // Restore cordova-android's statusBarView (and the WebView inset) unless overlaying.
+                        execSystemBarPlugin("setStatusBarVisible", overlaysWebView ? "[false]" : "[true]");
+                    }
                 });
                 return true;
 
@@ -143,6 +149,12 @@ public class StatusBar extends CordovaPlugin {
                     // CB-11197 We still need to update LayoutParams to force status bar
                     // to be hidden when entering e.g. text fields
                     window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+
+                    if (hasSystemBarPlugin()) {
+                        // Collapse cordova-android's statusBarView too, otherwise its band stays
+                        // where the status bar was until the next inset dispatch.
+                        execSystemBarPlugin("setStatusBarVisible", "[false]");
+                    }
                 });
                 return true;
 
@@ -234,6 +246,7 @@ public class StatusBar extends CordovaPlugin {
     }
 
     private void setStatusBarTransparent(final boolean isTransparent) {
+        overlaysWebView = isTransparent;
         final Window window = cordova.getActivity().getWindow();
         int visibility = isTransparent
             ? View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
