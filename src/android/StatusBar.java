@@ -19,6 +19,7 @@
  */
 package org.apache.cordova.statusbar;
 
+import android.content.res.Configuration;
 import android.graphics.Color;
 import android.os.Build;
 import android.view.View;
@@ -35,7 +36,9 @@ import org.apache.cordova.CordovaInterface;
 import org.apache.cordova.CordovaPlugin;
 import org.apache.cordova.CordovaWebView;
 import org.apache.cordova.LOG;
+import org.apache.cordova.PluginManager;
 import org.apache.cordova.PluginResult;
+import org.json.JSONArray;
 import org.json.JSONException;
 
 public class StatusBar extends CordovaPlugin {
@@ -52,8 +55,17 @@ public class StatusBar extends CordovaPlugin {
     private static final String STYLE_DEFAULT = "default";
     private static final String STYLE_LIGHT_CONTENT = "lightcontent";
 
+    /**
+     * cordova-android 15+ handles the status bar itself: CordovaActivity lays a "statusBarView" over the
+     * top window inset and its built-in SystemBarPlugin colours that view. On Android 15+ (target SDK 35+)
+     * the platform disables Window.setStatusBarColor(), so that view is the only thing visible behind the
+     * status bar. Colour and overlay changes are therefore mirrored to SystemBarPlugin whenever it exists.
+     */
+    private static final String SYSTEM_BAR_PLUGIN = "SystemBarPlugin";
+
     private AppCompatActivity activity;
     private Window window;
+    private String currentStyle = STYLE_LIGHT_CONTENT;
 
     /**
      * Sets the context of the Command. This can then be used to do things like
@@ -167,6 +179,26 @@ public class StatusBar extends CordovaPlugin {
         }
     }
 
+    @Override
+    public void onResume(boolean multitasking) {
+        super.onResume(multitasking);
+        // SystemBarPlugin re-derives the icon colour from the background on resume (its onResume runs
+        // before ours, both synchronously on the UI thread); restore the explicitly requested style.
+        reapplyStatusBarStyle();
+    }
+
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        reapplyStatusBarStyle();
+    }
+
+    private void reapplyStatusBarStyle() {
+        if (hasSystemBarPlugin()) {
+            activity.runOnUiThread(() -> setStatusBarStyle(currentStyle));
+        }
+    }
+
     private void setStatusBarBackgroundColor(final String colorPref) {
         if (colorPref.isEmpty()) return;
 
@@ -180,7 +212,25 @@ public class StatusBar extends CordovaPlugin {
 
         window.clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS); // SDK 19-30
         window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS); // SDK 21
-        window.setStatusBarColor(color);
+        window.setStatusBarColor(color); // SDK 21-34; disabled by Android 15+ for apps targeting SDK 35+
+
+        if (hasSystemBarPlugin()) {
+            try {
+                JSONArray rgba = new JSONArray();
+                rgba.put(Color.red(color));
+                rgba.put(Color.green(color));
+                rgba.put(Color.blue(color));
+                rgba.put(Color.alpha(color) / 255.0);
+                // Going through exec() (instead of painting the view directly) makes SystemBarPlugin
+                // remember the colour, so its onResume / onConfigurationChanged refresh keeps it
+                // rather than reverting to the StatusBarBackgroundColor preference.
+                execSystemBarPlugin("setStatusBarBackgroundColor", rgba.toString());
+            } catch (JSONException ignore) {
+                LOG.e(TAG, "Could not forward the status bar colour to " + SYSTEM_BAR_PLUGIN);
+            }
+            // SystemBarPlugin picks light or dark icons from the colour's luminance; the explicit style wins.
+            setStatusBarStyle(currentStyle);
+        }
     }
 
     private void setStatusBarTransparent(final boolean isTransparent) {
@@ -194,6 +244,12 @@ public class StatusBar extends CordovaPlugin {
         if (isTransparent) {
             window.setStatusBarColor(Color.TRANSPARENT);
         }
+
+        if (hasSystemBarPlugin()) {
+            // CordovaActivity keeps the WebView below its statusBarView regardless of the SYSTEM_UI flags.
+            // Collapsing that view removes the inset, so the WebView extends under the transparent status bar.
+            execSystemBarPlugin("setStatusBarVisible", isTransparent ? "[false]" : "[true]");
+        }
     }
 
     private void setStatusBarStyle(final String style) {
@@ -202,12 +258,30 @@ public class StatusBar extends CordovaPlugin {
             WindowInsetsControllerCompat windowInsetsControllerCompat = WindowCompat.getInsetsController(window, decorView);
 
             if (style.equals(STYLE_DEFAULT)) {
+                currentStyle = style;
                 windowInsetsControllerCompat.setAppearanceLightStatusBars(true);
             } else if (style.equals(STYLE_LIGHT_CONTENT)) {
+                currentStyle = style;
                 windowInsetsControllerCompat.setAppearanceLightStatusBars(false);
             } else {
                 LOG.e(TAG, "Invalid style, must be either 'default' or 'lightcontent'");
             }
         }
+    }
+
+    /**
+     * @return true when running on a cordova-android that ships the built-in SystemBarPlugin (15.0.0+).
+     */
+    private boolean hasSystemBarPlugin() {
+        PluginManager pluginManager = webView != null ? webView.getPluginManager() : null;
+        return pluginManager != null && pluginManager.getPlugin(SYSTEM_BAR_PLUGIN) != null;
+    }
+
+    /**
+     * Dispatches an action to SystemBarPlugin exactly like a JavaScript exec() call without callbacks
+     * would ("INVALID" is the callback id cordova.js uses in that case, and results for it are dropped).
+     */
+    private void execSystemBarPlugin(final String action, final String rawArgs) {
+        webView.getPluginManager().exec(SYSTEM_BAR_PLUGIN, action, "INVALID", rawArgs);
     }
 }
